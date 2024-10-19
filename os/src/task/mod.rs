@@ -14,9 +14,10 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::config::MAX_APP_NUM;
+use crate::config::{MAX_APP_NUM, MAX_SYSCALL_NUM};
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
@@ -39,6 +40,7 @@ pub struct TaskManager {
     inner: UPSafeCell<TaskManagerInner>,
 }
 
+#[derive(Debug)]
 /// Inner of Task Manager
 pub struct TaskManagerInner {
     /// task list
@@ -51,22 +53,24 @@ lazy_static! {
     /// Global variable: TASK_MANAGER
     pub static ref TASK_MANAGER: TaskManager = {
         let num_app = get_num_app();
-        let mut tasks = [TaskControlBlock {
-            task_cx: TaskContext::zero_init(),
-            task_status: TaskStatus::UnInit,
-        }; MAX_APP_NUM];
+        let mut tasks = [TaskControlBlock ::new(); MAX_APP_NUM];
+
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
             task.task_status = TaskStatus::Ready;
+            task.create_time = get_time_ms();
         }
+
         TaskManager {
             num_app,
             inner: unsafe {
-                UPSafeCell::new(TaskManagerInner {
+                UPSafeCell::new(
+                    TaskManagerInner {
                     tasks,
                     current_task: 0,
                 })
             },
+          
         }
     };
 }
@@ -80,6 +84,9 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let task0 = &mut inner.tasks[0];
         task0.task_status = TaskStatus::Running;
+        if  task0.create_time==0 {
+            task0.create_time = get_time_ms();
+        }
         let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -121,8 +128,13 @@ impl TaskManager {
         if let Some(next) = self.find_next_task() {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
+            // inner.tasks[current].create_time = get_time_ms() - inner.tasks[current].create_time;
             inner.tasks[next].task_status = TaskStatus::Running;
+            if  inner.tasks[next].create_time ==0  {
+                inner.tasks[next].create_time  = get_time_ms();
+            }
             inner.current_task = next;
+
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
             drop(inner);
@@ -135,6 +147,26 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+    
+    /// get_current_task_status
+    fn get_current_task_status(&self) -> TaskStatus{
+        let inner = self.inner.exclusive_access();
+        let current_task = inner.tasks[inner.current_task];
+        current_task.task_status 
+    }
+    /// update_syscall_times
+    fn update_syscall_times(& self, id: usize){
+       let mut inner = self.inner.exclusive_access();
+       let current = inner.current_task;
+       inner.tasks[current].inc_sys_call(id);
+    }
+
+    /// get syscall times
+    fn get_syscall_times(&self)-> [u32; MAX_SYSCALL_NUM]{
+        let inner = self.inner.exclusive_access();
+        inner.tasks[inner.current_task].syscall_times
+    }
+
 }
 
 /// Run the first task in task list.
@@ -168,4 +200,26 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// get current task status return TaskStatus
+pub fn get_current_status() -> TaskStatus {
+    TASK_MANAGER.get_current_task_status()
+}
+
+/// get current task`s syscall call times
+pub fn get_syscall_times() -> [u32; MAX_SYSCALL_NUM] {
+    TASK_MANAGER.get_syscall_times()
+}
+
+/// update current task syscall time
+pub fn update_syscall_times(id: usize) {
+    TASK_MANAGER.update_syscall_times(id);
+}
+/// get_current_task_create_time
+pub fn get_current_task_create_time() -> usize{
+    // TASK_MANAGER.get_current_task_create_time()
+    let inner = TASK_MANAGER.inner.exclusive_access();
+    let current_task = inner.tasks[inner.current_task];
+    current_task.create_time
 }

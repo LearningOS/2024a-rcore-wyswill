@@ -18,3 +18,6 @@ pushall.sh
 
 user/
 ci-user/
+/temp-os
+/easy-fs-fuse
+os/vendor
