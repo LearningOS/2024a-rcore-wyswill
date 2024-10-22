@@ -3,7 +3,7 @@ use crate::{
     config::MAX_SYSCALL_NUM,
     task::{
         change_program_brk, exit_current_and_run_next, suspend_current_and_run_next, TaskStatus,
-    },
+    }, timer::{get_time_ms, get_time_us},
 };
 
 #[repr(C)]
@@ -41,9 +41,13 @@ pub fn sys_yield() -> isize {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     trace!("kernel: sys_get_time");
-    -1
+    unsafe {
+        (*ts).sec = get_time_ms() /1000;
+        (*ts).usec = get_time_us();
+    }
+    0   
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases

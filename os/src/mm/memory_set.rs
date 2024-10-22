@@ -223,9 +223,12 @@ impl MemorySet {
     }
     /// Change page table by writing satp CSR Register.
     pub fn activate(&self) {
+        // 开启mmu
         let satp = self.page_table.token();
         unsafe {
+            // 写入开启mmu指令
             satp::write(satp);
+            // 刷新mmu页表
             asm!("sfence.vma");
         }
     }
