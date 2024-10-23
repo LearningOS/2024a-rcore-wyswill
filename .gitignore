@@ -1,6 +1,8 @@
 .*/*
 !.github/*
 !.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
 .idea
 Cargo.lock
 target
@@ -18,4 +20,3 @@ pushall.sh
 
 user/
 ci-user/
-os/vendor
