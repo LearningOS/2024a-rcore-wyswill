@@ -14,8 +14,10 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
@@ -79,6 +81,9 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
+        if next_task.time == 0 {
+            next_task.time = get_time_ms();
+        }
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -140,6 +145,9 @@ impl TaskManager {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
+            if inner.tasks[next].time == 0 {
+                inner.tasks[next].time = get_time_ms();
+            }
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
@@ -152,6 +160,17 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+    /// get_syscall_times
+    fn get_syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        inner.tasks[inner.current_task].syscall_times
+    }
+    /// get current task craet time
+    fn get_creat_time(&self) -> usize {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].time
     }
 }
 
@@ -201,4 +220,35 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// get current task`s syscall call times
+pub fn get_syscall_times() -> [u32; MAX_SYSCALL_NUM] {
+    TASK_MANAGER.get_syscall_times()
+}
+
+/// update current task syscall time
+pub fn update_syscall_times(id: usize) {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    inner.tasks[current].update_syscall(id);
+}
+/// get current task systall times
+pub fn get_creat_time() -> usize {
+    TASK_MANAGER.get_creat_time()
+}
+/// get the current 'Running' task
+pub fn current_task() -> &'static TaskControlBlock {
+    let inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    // let task = inner.tasks[current];
+    let task = &inner.tasks[current]  as *const TaskControlBlock;
+        // 使用 ManuallyDrop 来避免 drop 掉原来的 task
+    // let task = core::mem::ManuallyDrop::new(Box::new(task.clone()));
+
+    // 使用 Box::leak 将 Box<TaskControlBlock> 转换为 &'static mut TaskControlBlock
+    // Box::leak(task)
+    // 由于 task 的生命周期与 inner 相同，我们需要确保返回的引用是 'static
+    unsafe { &*task }
+    
 }

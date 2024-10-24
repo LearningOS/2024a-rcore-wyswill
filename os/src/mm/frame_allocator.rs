@@ -98,8 +98,13 @@ pub fn init_frame_allocator() {
     extern "C" {
         fn ekernel();
     }
+
+    // 物理内存区间
+    // [ekernal, MEMORY_END]
     FRAME_ALLOCATOR.exclusive_access().init(
+        // 从ekernal 段向上取整
         PhysAddr::from(ekernel as usize).ceil(),
+        // 到设定最大内存向下取整
         PhysAddr::from(MEMORY_END).floor(),
     );
 }

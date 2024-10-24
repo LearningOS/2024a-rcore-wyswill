@@ -1,9 +1,11 @@
 //! Process management syscalls
 use crate::{
-    config::MAX_SYSCALL_NUM,
+    config::{MAX_SYSCALL_NUM, PAGE_SIZE},
+    mm::{current_user_table, translated_va_to_pa, MapPermission, MemorySet, VirtPageNum},
     task::{
-        change_program_brk, exit_current_and_run_next, suspend_current_and_run_next, TaskStatus,
-    }, timer::{get_time_ms, get_time_us},
+        change_program_brk, current_task, current_user_token, exit_current_and_run_next, get_creat_time, get_syscall_times, suspend_current_and_run_next, TaskStatus
+    },
+    timer::{get_time_ms, get_time_us},
 };
 
 #[repr(C)]
@@ -43,11 +45,28 @@ pub fn sys_yield() -> isize {
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     trace!("kernel: sys_get_time");
-    unsafe {
-        (*ts).sec = get_time_ms() /1000;
-        (*ts).usec = get_time_us();
+    // 当前的虚拟地址
+    let ts_va = ts as usize;
+    //
+    let ts_page_start = ts_va & !(PAGE_SIZE - 1);
+    let ts_page_end = ts_page_start + PAGE_SIZE;
+    // let ts_end = ts_va + core::mem::size_of::<TimeVal>();
+
+    if ts_va + core::mem::size_of::<TimeVal>() > ts_page_end {
+        // TimeVal 结构体跨越了页边界，返回错误
+        return -1;
     }
-    0   
+
+    let pa = translated_va_to_pa(current_user_token(), ts_va);
+    let ts = pa.0 as *mut TimeVal;
+    let us = get_time_us();
+    unsafe {
+        *ts = TimeVal {
+            sec: us / 1_000_000,
+            usec: us % 1_000_000,
+        };
+    }
+    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
@@ -55,19 +74,126 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
     trace!("kernel: sys_task_info NOT IMPLEMENTED YET!");
-    -1
+    // ti is va
+    // 将虚拟地址转换为物理页表进行操作
+    let ti_va = _ti as usize;
+    let pa = translated_va_to_pa(current_user_token(), ti_va);
+    let ti = pa.0 as *mut TaskInfo;
+
+    let current = get_time_ms();
+    let time = current - get_creat_time();
+    let syscall_times = get_syscall_times();
+    unsafe {
+        (*ti).status = TaskStatus::Running;
+        (*ti).syscall_times = syscall_times;
+        (*ti).time = time;
+    }
+
+    0
 }
 
 // YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
+pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
     trace!("kernel: sys_mmap NOT IMPLEMENTED YET!");
-    -1
+    // trace!("kernel: sys_mmap NOT IMPLEMENTED YET!");
+    if len == 0 {
+        warn!("kernel: len  == 0 !");
+        return -1;
+    }
+    if port & !0x7 != 0 {
+        warn!("kernel: port mask must be 0 {}!", port);
+        return -1;
+    }
+    if port & 0x7 == 0 {
+        warn!("kernel: port not vaild , R = 0 : {}!", port);
+        return -1;
+    }
+    if start & (PAGE_SIZE - 1) != 0 {
+        warn!("kernel: start not aligend!  {}!", start);
+        return -1;
+    }
+
+    // -1
+    let pages = (len - 1 + PAGE_SIZE) / PAGE_SIZE;
+    let table = current_user_table();
+    let vpn_start = start / PAGE_SIZE;
+    for i in 0..pages {
+        let vpn = VirtPageNum(vpn_start + i);
+        // vpn.0
+        debug!("sys_mmap: try to mapping vpn: {:?} / pages {}!", vpn, pages);
+        if table.translate(vpn).is_some_and(|p| p.is_valid()) {
+            warn!(
+                "sys_mmap: [start, start + len) already existed mapping !: {:?} !",
+                vpn
+            );
+            return -1;
+        }
+    }
+
+    let permission = MapPermission::from_bits_truncate((port << 1) as u8) | MapPermission::U;
+
+    debug!(
+        "sys_mmap: permission111 {:?}, start {:#x} , pages {} vpn {:?} , len {} ",
+        permission,
+        start,
+        pages,
+        crate::mm::VirtAddr::from(start),
+        len
+    );
+    // let pcn =  current_task();
+    let mset = &current_task().memory_set as *const MemorySet as *mut MemorySet;
+    unsafe {
+        // (*mset).activate();
+        (*mset).insert_framed_area(
+            crate::mm::VirtAddr::from(start),
+            crate::mm::VirtAddr::from(start + pages * PAGE_SIZE),
+            permission,
+        );
+    }
+
+    0
 }
 
 // YOUR JOB: Implement munmap.
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!("kernel: sys_munmap NOT IMPLEMENTED YET!");
-    -1
+pub fn sys_munmap(start: usize, len: usize) -> isize {
+    // trace!("kernel: sys_munmap NOT IMPLEMENTED YET!");
+    if start & (PAGE_SIZE - 1) != 0 {
+        warn!("kernel: start ptr NOT aligend : {}!", start);
+        return -1;
+    }
+
+    // -1
+    let pages = (len - 1 + PAGE_SIZE) / PAGE_SIZE;
+    let table = current_user_table();
+    let vpn_start = start / PAGE_SIZE;
+    for i in 0..pages {
+        let vpn = VirtPageNum(vpn_start + i);
+        if table.translate(vpn).is_some_and(|p| !p.is_valid()) {
+            warn!(
+                "kernel: [start, start + len) has unmapped : {}!",
+                vpn_start + i
+            );
+            return -1;
+        }
+        // debug!("==== sys_munmap check VPN {} has pte ", vpn_start + i);
+    }
+
+    debug!(
+        "==== UN sys_munmap start {:#x} ,vpn {:?}, pages {}/ len {} ",
+        start,
+        crate::mm::VirtAddr::from(start),
+        pages,
+        len,
+    );
+    let mset = &current_task().memory_set as *const MemorySet as *mut MemorySet;
+    unsafe {
+        (*mset).shrink_to(
+            crate::mm::VirtAddr::from(start),
+            crate::mm::VirtAddr::from(start + (pages - 1) * PAGE_SIZE),
+        );
+    }
+    // mset
+    0
 }
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {
